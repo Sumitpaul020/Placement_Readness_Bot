@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Capstone 14 — Placement Readiness Bot
 
 Ek hi conversational agent, do tools ke saath:
@@ -176,6 +175,3 @@ questions puch sakte ho.
   pehli baar; ya `faiss-cpu` version apne OS ke hisaab se adjust karo.
 - **Model file not found** → pehle `train_model.py` run karna zaroori hai
   `app.py` chalane se pehle.
-=======
-# Placement_Readness_Bot
->>>>>>> dba6dd013a86de8300441f4a84e238bf2990c86b

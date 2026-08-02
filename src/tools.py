@@ -14,12 +14,60 @@ MODEL_PATH = "model/placement_model.pkl"
 
 _model_bundle = None
 
+# Tracks the most recent prediction made via the @tool (chat) path, so the
+# Streamlit app can render a chart for it even though the chat reply itself
+# is just text. Reset to None after the app reads and displays it.
+_last_prediction = None
+
+
+def get_last_prediction():
+    """Returns the most recent prediction dict (or None), for the UI to chart."""
+    return _last_prediction
+
+
+def clear_last_prediction():
+    global _last_prediction
+    _last_prediction = None
+
 
 def _load_model():
     global _model_bundle
     if _model_bundle is None:
         _model_bundle = joblib.load(MODEL_PATH)
     return _model_bundle
+
+
+def predict_placement_raw(
+    cgpa: float,
+    backlogs: int,
+    internships: int,
+    projects: int,
+    coding_score: float,
+    communication_score: float,
+    attendance_percent: float,
+) -> dict:
+    """Runs the trained model directly and returns a dict with the raw
+    prediction details. Used by BOTH the agent tool below and the Streamlit
+    'Quick Predictor' form, so the two are always guaranteed to match (TC5)."""
+    bundle = _load_model()
+    model = bundle["model"]
+    features = bundle["features"]
+
+    row = {
+        "cgpa": cgpa,
+        "backlogs": backlogs,
+        "internships": internships,
+        "projects": projects,
+        "coding_score": coding_score,
+        "communication_score": communication_score,
+        "attendance_percent": attendance_percent,
+    }
+    X = [[row[f] for f in features]]
+
+    pred = int(model.predict(X)[0])
+    proba = float(model.predict_proba(X)[0][1])  # probability of class "1" = placed
+
+    return {"placed": pred, "probability": proba}
 
 
 @tool
@@ -52,11 +100,13 @@ def predict_placement(
         A short string with the predicted label (Placed / Not Placed) and
         the model's estimated probability of placement.
     """
-    bundle = _load_model()
-    model = bundle["model"]
-    features = bundle["features"]
+    result = predict_placement_raw(
+        cgpa, backlogs, internships, projects,
+        coding_score, communication_score, attendance_percent,
+    )
 
-    row = {
+    global _last_prediction
+    _last_prediction = {
         "cgpa": cgpa,
         "backlogs": backlogs,
         "internships": internships,
@@ -64,15 +114,13 @@ def predict_placement(
         "coding_score": coding_score,
         "communication_score": communication_score,
         "attendance_percent": attendance_percent,
+        "placed": result["placed"],
+        "probability": result["probability"],
     }
-    X = [[row[f] for f in features]]
 
-    pred = model.predict(X)[0]
-    proba = model.predict_proba(X)[0][1]  # probability of class "1" = placed
-
-    label = "Likely to be PLACED" if pred == 1 else "Currently NOT likely to be placed"
+    label = "Likely to be PLACED" if result["placed"] == 1 else "Currently NOT likely to be placed"
     return (
-        f"{label}. Model estimated placement probability: {proba*100:.1f}%. "
+        f"{label}. Model estimated placement probability: {result['probability']*100:.1f}%. "
         f"(Based on: CGPA={cgpa}, backlogs={backlogs}, internships={internships}, "
         f"projects={projects}, coding_score={coding_score}, "
         f"communication_score={communication_score}, attendance={attendance_percent}%)"

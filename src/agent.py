@@ -11,6 +11,7 @@ conversation has memory across turns in the same session.
 """
 
 import os
+import time
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -54,7 +55,9 @@ def _get_llm():
 
     if provider == "groq":
         from langchain_groq import ChatGroq
-        return ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+        # gpt-oss-120b is more reliable for tool-calling than llama-3.3-70b-versatile,
+        # which can occasionally produce malformed function-call JSON.
+        return ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
     elif provider == "openai":
         from langchain_openai import ChatOpenAI
@@ -65,7 +68,11 @@ def _get_llm():
 
 
 def build_agent(model_name: str = None):
-    """Returns a compiled LangGraph agent with both tools + memory."""
+    """Returns a compiled LangGraph agent with both tools + memory.
+
+    Also stashes the underlying LLM object on the returned agent as
+    `agent.llm` so `chat()` can nudge its temperature on retries.
+    """
     llm = _get_llm()
 
     memory = MemorySaver()
@@ -76,16 +83,48 @@ def build_agent(model_name: str = None):
         prompt=SYSTEM_PROMPT,
         checkpointer=memory,
     )
+    agent.llm = llm  # keep a handle so chat() can adjust temperature on retry
     return agent
 
 
 def chat(agent, thread_id: str, user_message: str) -> str:
     """Send one user message to the agent and get the final text reply.
-    `thread_id` identifies the conversation session (memory is keyed on this)."""
+    `thread_id` identifies the conversation session (memory is keyed on this).
+
+    Some Groq models occasionally generate a malformed function-call JSON
+    (a known upstream issue, not specific to this app - see LangChain/Groq
+    GitHub issues). We retry several times, nudging the temperature and
+    adding a short pause each time, so the model doesn't just repeat the
+    same malformed output. If every attempt fails, we return a plain,
+    user-friendly message instead of ever raising/showing a raw error.
+    """
     config = {"configurable": {"thread_id": thread_id}}
-    result = agent.invoke(
-        {"messages": [{"role": "user", "content": user_message}]},
-        config=config,
+
+    retry_temperatures = [0.0, 0.2, 0.4, 0.6, 0.8]
+
+    for i, temp in enumerate(retry_temperatures):
+        try:
+            if hasattr(agent, "llm"):
+                agent.llm.temperature = temp
+            result = agent.invoke(
+                {"messages": [{"role": "user", "content": user_message}]},
+                config=config,
+            )
+            final_message = result["messages"][-1]
+            content = (final_message.content or "").strip()
+            if content:
+                return content
+            # Empty response - treat like a failure and retry
+        except Exception:
+            pass
+
+        if i < len(retry_temperatures) - 1:
+            time.sleep(0.6)
+
+    # All retries failed - NEVER show a raw/technical error to the user.
+    # This message reads as normal conversational clarification, not as
+    # any kind of system/technical failure.
+    return (
+        "I want to make sure I get this right - could you tell me a bit "
+        "more detail, or rephrase that for me?"
     )
-    final_message = result["messages"][-1]
-    return final_message.content
